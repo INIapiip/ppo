@@ -9,7 +9,7 @@ from langchain_core.tools import Tool
 from langchain.memory import ConversationBufferMemory
 from langchain_google_genai import ChatGoogleGenerativeAI
 from google.api_core.exceptions import GoogleAPICallError
-from googlesearch import search
+from serpapi import GoogleSearch
 from typing import Optional
 from langchain_cohere import CohereEmbeddings
 
@@ -34,30 +34,40 @@ def load_css():
 
 def get_google_search_results(query: str) -> str:
     try:
-        num_results = 10
-        results = list(search(query, num_results=num_results, lang="id"))
-        if not results:
-            return f"Maaf, saya tidak dapat menemukan hasil yang relevan di Google untuk '{query}'."
+        api_key = os.getenv("SERPAPI_API_KEY")
+        if not api_key:
+            return "❌ API Key SerpAPI tidak ditemukan."
 
-        url_list = "\n".join([f"{i+1}. {url}" for i, url in enumerate(results)])
-        final_answer = (
-            f"Tentu, berikut adalah {len(results)} hasil pencarian teratas untuk '{query}':\n"
-            f"{url_list}\n\n"
-            "**Penting**: Harap evaluasi sendiri kredibilitas dan keakuratan informasi dari situs-situs tersebut."
-        )
-        return final_answer
+        params = {
+            "engine": "google",
+            "q": query,
+            "hl": "id",
+            "num": 5,
+            "api_key": api_key
+        }
+
+        search = GoogleSearch(params)
+        results = search.get_dict()
+
+        if "error" in results:
+            return f"❌ Error dari SerpAPI: {results['error']}"
+
+        organic_results = results.get("organic_results", [])
+        if not organic_results:
+            return "🔍 Tidak ditemukan hasil pencarian dari Google."
+
+        output = "🔎 Hasil pencarian teratas:\n"
+        for i, result in enumerate(organic_results[:5]):
+            title = result.get("title", "Tanpa Judul")
+            link = result.get("link", "#")
+            output += f"{i+1}. [{title}]({link})\n"
+
+        return output
+
     except Exception as e:
-        return f"Terjadi kesalahan saat melakukan pencarian Google: {str(e)}"
+        return f"❌ Terjadi kesalahan saat pencarian SerpAPI: {str(e)}"
 
 def run_agent(user_input: str, retriever: FaissRetriever, pdf_content: Optional[str] = None) -> str:
-    """
-    Menjalankan chatbot dengan pendekatan hybrid:
-    1. Coba jawab dari dokumen (jika tersedia)
-    2. Jika tidak relevan → cari dari FAISS (database)
-    3. Jika tetap tidak ditemukan → fallback ke Google Search
-    """
-
-    # ✅ Siapkan model Gemini
     gemini_handler = GeminiCallbackHandler()
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-flash",
@@ -78,8 +88,7 @@ def run_agent(user_input: str, retriever: FaissRetriever, pdf_content: Optional[
 
             Pertanyaan: {user_input}
             """
-            response = llm.invoke(prompt)
-            return str(response.content)
+            return str(llm.invoke(prompt))
 
         retriever_result = retriever.search(user_input, k=3)
         context = "\n".join([doc.page_content for doc in retriever_result]) if retriever_result else ""
@@ -94,8 +103,7 @@ def run_agent(user_input: str, retriever: FaissRetriever, pdf_content: Optional[
 
             Pertanyaan: {user_input}
             """
-            response = llm.invoke(prompt)
-            return str(response.content)
+            return str(llm.invoke(prompt))
 
         st.info("🔍 Jawaban tidak ditemukan di database. Mencoba mencari dari internet...")
         return get_google_search_results(user_input)
